@@ -1,33 +1,16 @@
-import subprocess
-import sys
 import os
 import asyncio
 import sqlite3
 import re
-
-REQUIRED_PACKAGES = ["aiogram", "aiohttp"]
-
-def install_and_update_packages():
-    for package in REQUIRED_PACKAGES:
-        try:
-            __import__(package.replace("-", "_"))
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-install_and_update_packages()
-
 import aiohttp
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message, CallbackQuery, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 
 API_TOKEN = '8571888062:AAFIb3QBtYw-N27mlqVmbp_fKBQikeQz9u8'
 
-# PythonAnywhere PROXY configuration
-PROXY_URL = "http://proxy.server:3128"
-session = AiohttpSession(proxy=PROXY_URL, timeout=300)
-bot = Bot(token=API_TOKEN, session=session)
+# Render-ում սովորական Bot (առանց proxy-ի)
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 DB_FILE = "songs_cache.db"
@@ -115,8 +98,7 @@ async def fetch_youtube_audio(url: str, output_path: str, video_id: str):
     }
 
     async with aiohttp.ClientSession() as http_session:
-        # Request download link from Cobalt API via proxy
-        async with http_session.post(api_url, json=payload, headers=headers, proxy=PROXY_URL, timeout=30) as resp:
+        async with http_session.post(api_url, json=payload, headers=headers, timeout=30) as resp:
             data = await resp.json()
             if "url" not in data:
                 raise Exception("Не удалось получить ссылку на скачивание.")
@@ -124,8 +106,7 @@ async def fetch_youtube_audio(url: str, output_path: str, video_id: str):
 
         file_path = os.path.join(output_path, f"{video_id}.mp3")
         
-        # Download the audio file
-        async with http_session.get(download_link, proxy=PROXY_URL, timeout=120) as audio_resp:
+        async with http_session.get(download_link, timeout=120) as audio_resp:
             if audio_resp.status == 200:
                 with open(file_path, "wb") as f:
                     f.write(await audio_resp.read())
