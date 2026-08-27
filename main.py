@@ -159,16 +159,23 @@ def download_youtube_audio(url: str, output_path: str):
         'no_warnings': True,
         'nocheckcertificate': True,
         'noplaylist': True,
-        'socket_timeout': 15,
-        'retries': 5,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'socket_timeout': 30,
+        'retries': 10,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web'],
-                'skip': ['hls', 'dash']
+                'player_client': ['mweb', 'tv', 'android'],
+                'skip': ['configs', 'webpage']
             }
         }
     }
+
+    # Եթե նախագծի թղթապանակում կա cookies.txt, ավտոմատ օգտագործում է այն
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -265,13 +272,13 @@ async def handle_youtube_link(message: Message):
             await status_message.edit_text("❌ Չհաջողվեց ներբեռնել ֆայլը։")
     except Exception as e:
         print(f"Ошибка: {e}")
-        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ: YouTube-ը արգելափակում է ներբեռնումը:")
+        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ: YouTube-ը ժամանակավորապես արգելափակում է ներբեռնումը:")
 
 # ⚡ Webhook-ի կարգավորում
 async def on_startup(bot: Bot) -> None:
     if BASE_WEBHOOK_URL:
         webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
-        await bot.delete_webhook(drop_pending_updates=True) # Մաքրում ենք նախորդ հարցումները
+        await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(webhook_url)
         print(f"🚀 Webhook-ը հաջողությամբ միացավ: {webhook_url}")
 
