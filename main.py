@@ -4,29 +4,11 @@ import os
 import asyncio
 import sqlite3
 import re
-from threading import Thread
-from flask import Flask
-
-# -------------------------------------------------------------
-# ⚡ ՎԵԲ-ՍԵՐՎԵՐ REPLIT-Ի ԿԱՄ UPTIME-Ի ՀԱՄԱՐ (որպեսզի չքնի)
-# -------------------------------------------------------------
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "🚀 Բոտը միացված է և ակտիվ աշխատում է:"
-
-def run_web_server():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_web_server)
-    t.start()
 
 # -------------------------------------------------------------
 # ԱՎՏՈՄԱՏ ԳՐԱԴԱՐԱՆՆԵՐԻ ՏԵՂԱԴՐՈՒՄ ԵՎ ԹԱՐՄԱՑՈՒՄ
 # -------------------------------------------------------------
-REQUIRED_PACKAGES = ["aiogram", "yt-dlp", "aiohttp", "flask"]
+REQUIRED_PACKAGES = ["aiogram", "yt-dlp", "aiohttp"]
 
 def install_and_update_packages():
     for package in REQUIRED_PACKAGES:
@@ -49,9 +31,17 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message, CallbackQuery, FSInputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
-# Քո BOT TOKEN-ը
+# BOT TOKEN
 API_TOKEN = '8571888062:AAFy7fMOqDHzDVK01y3SEULaSYNI7OZaHrk'
+
+# ⚡ Render-ի Webhook-ի փոփոխականներ
+BASE_WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
+WEB_SERVER_HOST = "0.0.0.0"
+WEB_SERVER_PORT = int(os.getenv("PORT", 10000))
 
 session = AiohttpSession(timeout=120)
 bot = Bot(token=API_TOKEN, session=session)
@@ -163,20 +153,19 @@ def clean_filename(title: str) -> str:
 
 def download_youtube_audio(url: str, output_path: str):
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio/best',
         'outtmpl': f'{output_path}/%(id)s.%(ext)s',
         'quiet': True,
         'no_warnings': True,
         'nocheckcertificate': True,
         'noplaylist': True,
-        'concurrent_fragment_downloads': 4,
-        'http_chunk_size': 10 * 1024 * 1024,
         'socket_timeout': 15,
-        'retries': 3,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'retries': 5,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android']
+                'player_client': ['android', 'ios', 'web'],
+                'skip': ['hls', 'dash']
             }
         }
     }
@@ -237,7 +226,6 @@ async def handle_youtube_link(message: Message):
     video_id_match = re.search(r'(?:v=|\/|vi=|^)([0-9A-Za-z_-]{11})', url)
     video_id = video_id_match.group(1) if video_id_match else None
 
-    # ⚡ Ստուգում ենք Cache-ը
     if video_id:
         cached_data = get_cached_video(video_id)
         if cached_data:
@@ -277,14 +265,25 @@ async def handle_youtube_link(message: Message):
             await status_message.edit_text("❌ Չհաջողվեց ներբեռնել ֆայլը։")
     except Exception as e:
         print(f"Ошибка: {e}")
-        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ։")
+        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ: YouTube-ը արգելափակում է ներբեռնումը:")
 
-# Բոտի գործարկում
-async def main():
-    # Միացնում ենք վեբ-սերվերը
-    keep_alive()
-    print("🚀 Բոտը հաջողությամբ գործարկվեց...")
-    await dp.start_polling(bot)
+# ⚡ Webhook-ի կարգավորում
+async def on_startup(bot: Bot) -> None:
+    if BASE_WEBHOOK_URL:
+        webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
+        await bot.delete_webhook(drop_pending_updates=True) # Մաքրում ենք նախորդ հարցումները
+        await bot.set_webhook(webhook_url)
+        print(f"🚀 Webhook-ը հաջողությամբ միացավ: {webhook_url}")
 
-if __name__ == '__main__':
-    asyncio.run(main())
+def main():
+    app = web.Application()
+    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    
+    dp.startup.register(on_startup)
+    
+    web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
+
+if __name__ == "__main__":
+    main()
