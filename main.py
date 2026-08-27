@@ -4,6 +4,7 @@ import os
 import asyncio
 import sqlite3
 import re
+import aiohttp
 
 # -------------------------------------------------------------
 # ԱՎՏՈՄԱՏ ԳՐԱԴԱՐԱՆՆԵՐԻ ՏԵՂԱԴՐՈՒՄ ԵՎ ԹԱՐՄԱՑՈՒՄ
@@ -18,12 +19,6 @@ def install_and_update_packages():
             print(f"📦 Ավտոմատ տեղադրվում է {package}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-    try:
-        print("🔄 Ստուգվում է yt-dlp-ի թարմացումները...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-    except Exception as e:
-        print(f"⚠️ Չհաջողվեց թարմացնել yt-dlp-ն: {e}")
-
 install_and_update_packages()
 
 import yt_dlp
@@ -37,7 +32,7 @@ from aiohttp import web
 # BOT TOKEN
 API_TOKEN = '8571888062:AAFy7fMOqDHzDVK01y3SEULaSYNI7OZaHrk'
 
-# ⚡ Render-ի Webhook-ի փոփոխականներ
+# Render Webhook
 BASE_WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
 WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
 WEB_SERVER_HOST = "0.0.0.0"
@@ -151,38 +146,57 @@ def clean_filename(title: str) -> str:
     cleaned = re.sub(r'[\\/*?:"<>|]', "", title).strip()
     return cleaned if cleaned else "Audio"
 
-def download_youtube_audio(url: str, output_path: str):
+# ⚡ Անխափան Ներբեռնում Invidious/Cobalt API-ների միջոցով
+async def download_audio_fast(video_id: str, output_path: str):
+    file_path = os.path.join(output_path, f"{video_id}.mp3")
+    
+    # Փորձում ենք ներբեռնել Cobalt API-ով (ամենաարագ ու անվտանգ տարբերակը Render-ի համար)
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "downloadMode": "audio",
+        "audioFormat": "mp3"
+    }
+
+    async with aiohttp.ClientSession() as session_http:
+        try:
+            async with session_http.post(api_url, json=payload, headers=headers, timeout=20) as resp:
+                data = await resp.json()
+                if "url" in data:
+                    audio_url = data["url"]
+                    async with session_http.get(audio_url) as audio_resp:
+                        if audio_resp.status == 200:
+                            with open(file_path, "wb") as f:
+                                f.write(await audio_resp.read())
+                            title = data.get("filename", "Audio").replace(".mp3", "")
+                            return file_path, clean_filename(title)
+        except Exception:
+            pass
+
+    # Եթե API-ն չհաջողվեց, որպես fallback օգտագործում ենք yt-dlp՝ TV/Android client-ներով
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'{output_path}/%(id)s.%(ext)s',
         'quiet': True,
-        'no_warnings': True,
         'nocheckcertificate': True,
-        'noplaylist': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'tv', 'android'],
-                'skip': ['configs', 'webpage']
+                'player_client': ['tv', 'android_creator', 'mweb']
             }
         }
     }
+    
+    loop = asyncio.get_event_loop()
+    def yt_dlp_download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+            return ydl.prepare_filename(info), clean_filename(info.get('title', 'Audio'))
 
-    # Եթե նախագծի թղթապանակում կա cookies.txt, ավտոմատ օգտագործում է այն
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        video_id = info.get('id')
-        title = clean_filename(info.get('title', 'Audio'))
-        return filename, video_id, title
+    return await loop.run_in_executor(None, yt_dlp_download)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -233,17 +247,20 @@ async def handle_youtube_link(message: Message):
     video_id_match = re.search(r'(?:v=|\/|vi=|^)([0-9A-Za-z_-]{11})', url)
     video_id = video_id_match.group(1) if video_id_match else None
 
-    if video_id:
-        cached_data = get_cached_video(video_id)
-        if cached_data:
-            cached_file_id, cached_title = cached_data
-            try:
-                await bot.send_chat_action(message.chat.id, "upload_voice")
-                await message.answer_audio(audio=cached_file_id, title=cached_title, reply_markup=inline_keyboard)
-                log_user_download(user_id, username)
-                return
-            except Exception:
-                pass
+    if not video_id:
+        await message.answer("❌ Սխալ YouTube հղում:")
+        return
+
+    cached_data = get_cached_video(video_id)
+    if cached_data:
+        cached_file_id, cached_title = cached_data
+        try:
+            await bot.send_chat_action(message.chat.id, "upload_voice")
+            await message.answer_audio(audio=cached_file_id, title=cached_title, reply_markup=inline_keyboard)
+            log_user_download(user_id, username)
+            return
+        except Exception:
+            pass
 
     status_message = await message.answer("🔍 Պատրաստում եմ...")
     output_dir = "downloads"
@@ -252,19 +269,15 @@ async def handle_youtube_link(message: Message):
 
     try:
         await bot.send_chat_action(message.chat.id, "upload_voice")
-        loop = asyncio.get_event_loop()
-        filename, downloaded_id, title = await loop.run_in_executor(
-            None, download_youtube_audio, url, output_dir
-        )
+        filename, title = await download_audio_fast(video_id, output_dir)
 
         if os.path.exists(filename):
             await status_message.edit_text("📤 Ուղարկվում է Telegram...")
-            audio_file = FSInputFile(filename, filename=f"{title}.m4a")
+            audio_file = FSInputFile(filename, filename=f"{title}.mp3")
             sent_audio = await message.answer_audio(audio=audio_file, title=title, reply_markup=inline_keyboard)
             
             log_user_download(user_id, username)
-            if downloaded_id:
-                save_to_cache(downloaded_id, sent_audio.audio.file_id, title)
+            save_to_cache(video_id, sent_audio.audio.file_id, title)
             
             os.remove(filename)
             await status_message.delete()
@@ -272,9 +285,8 @@ async def handle_youtube_link(message: Message):
             await status_message.edit_text("❌ Չհաջողվեց ներբեռնել ֆայլը։")
     except Exception as e:
         print(f"Ошибка: {e}")
-        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ: YouTube-ը ժամանակավորապես արգելափակում է ներբեռնումը:")
+        await status_message.edit_text("⚠️ Տեղի ունեցավ սխալ ներբեռնման ընթացքում:")
 
-# ⚡ Webhook-ի կարգավորում
 async def on_startup(bot: Bot) -> None:
     if BASE_WEBHOOK_URL:
         webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
@@ -289,7 +301,6 @@ def main():
     setup_application(app, dp, bot=bot)
     
     dp.startup.register(on_startup)
-    
     web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
 
 if __name__ == "__main__":
